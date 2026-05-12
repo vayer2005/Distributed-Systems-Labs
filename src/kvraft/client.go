@@ -8,6 +8,7 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	leader int
 }
 
 func nrand() int64 {
@@ -21,9 +22,15 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
+	ck.leader = 0
+
 	return ck
 }
 
+
+func (ck *Clerk) getLeader() int {
+	return ck.leader
+}
 //
 // fetch the current value for a key.
 // returns "" if the key does not exist.
@@ -37,9 +44,24 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
+	
 	// You will have to modify this function.
-	return ""
+
+	args := GetArgs{Key:key}
+	reply := GetReply{}
+
+	for {
+		leader := ck.getLeader()
+
+		ok := ck.servers[leader].Call("RaftKV.Get", &args, &reply)
+		if !ok {
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+			continue
+		}
+		//Success
+		break
+	}
+	return reply.Value
 }
 
 //
@@ -54,6 +76,23 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	args := PutAppendArgs{Key: key, Value: value, Op: op}
+	reply := PutAppendReply{}
+
+	for {
+		leader := ck.getLeader()
+		ok := ck.servers[leader].Call("RaftKV.PutAppend", &args, &reply)
+
+		if !ok && reply.WrongLeader {
+			//TODO: handle wrong cachedleader
+			ck.leader = (ck.leader + 1) % len(ck.servers)
+			continue
+		}
+		//SUCCESS
+		break
+	}	
+	
 }
 
 func (ck *Clerk) Put(key string, value string) {

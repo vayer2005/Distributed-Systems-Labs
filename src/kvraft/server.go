@@ -17,11 +17,18 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
+// opWaitKey identifies who submitted an op; Id alone is not unique across peers.
+type opWaitKey struct {
+	Me int
+	Id int
+}
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	Id int
+	Me int 
+	Req any
 }
 
 type RaftKV struct {
@@ -33,15 +40,71 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	waiters  map[opWaitKey]chan struct{}
+	id int //Atomically increasing opId
+}
+
+func (kv *RaftKV) ApplyRoutine() {
+	//TODO: Consistently pulls apply msgs off the channel and notifies waiting routines.
+	for {
+		msg := <-kv.applyCh
+
+		commandValid := msg.CommandValid
+		if (!commandValid) {
+			continue
+		}
+		op := msg.Command.(Op)
+		key := opWaitKey{Me: op.Me, Id: op.Id}
+		kv.mu.Lock()
+		ch, found := kv.waiters[key]
+		if found {
+			delete(kv.waiters, key)
+			close(ch)
+		}
+		kv.mu.Unlock()
+	
+	}
 }
 
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	//TODO: Append the current get to log, wait for apply, once applied return
+
+
+
+
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	kv.mu.Lock()
+	id := kv.id
+	me := kv.me
+	kv.id++
+	waitKey := opWaitKey{Me: me, Id: id}
+	ch := make(chan struct{})
+	kv.waiters[waitKey] = ch
+	kv.mu.Unlock()
+	op := Op{Me:me, Id:id, Req:args}
+
+	_, _, leader := kv.rf.Start(op)
+
+	if !leader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		kv.mu.Lock()
+		close(ch)
+		delete(kv.waiters, waitKey)
+		kv.mu.Unlock()
+	}
+
+	<- ch
+
+	reply.WrongLeader = false
+	reply.Err = OK
+
+	return	
 }
 
 //
@@ -78,6 +141,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.maxraftstate = maxraftstate
 
 	// Your initialization code here.
+	go kv.ApplyRoutine()
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
