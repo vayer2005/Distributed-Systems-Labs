@@ -26,8 +26,8 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Id int
-	Me int 
+	Id  int
+	Me  int
 	Req any
 }
 
@@ -41,10 +41,9 @@ type RaftKV struct {
 
 	// Your definitions here.
 	waiters map[opWaitKey]chan struct{}
-	id      int // atomically increasing op id
+	id      int               // atomically increasing op id
 	store   map[string]string // key value state
 }
-
 
 // Handle put or append. Caller must hold kv.mu.
 func (kv *RaftKV) handlePutAppend(key string, value string) {
@@ -61,11 +60,8 @@ func (kv *RaftKV) ApplyRoutine() {
 	for {
 		msg := <-kv.applyCh
 
-		commandValid := msg.CommandValid
-		if (!commandValid) {
-			continue
-		}
 		op := msg.Command.(Op)
+
 		key := opWaitKey{Me: op.Me, Id: op.Id}
 		kv.mu.Lock()
 		ch, found := kv.waiters[key]
@@ -74,10 +70,9 @@ func (kv *RaftKV) ApplyRoutine() {
 			close(ch)
 		}
 		kv.mu.Unlock()
-	
+
 	}
 }
-
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
@@ -90,7 +85,7 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	ch := make(chan struct{})
 	kv.waiters[waitKey] = ch
 	kv.mu.Unlock()
-	op := Op{Me:me, Id:id, Req:args}
+	op := Op{Me: me, Id: id, Req: args}
 
 	_, _, leader := kv.rf.Start(op)
 
@@ -103,10 +98,10 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		kv.mu.Unlock()
 	}
 
-	<- ch
+	<-ch
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-	val, ok  := kv.store[args.Key]
+	val, ok := kv.store[args.Key]
 	if !ok {
 		reply.Value = ""
 	} else {
@@ -126,7 +121,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	ch := make(chan struct{})
 	kv.waiters[waitKey] = ch
 	kv.mu.Unlock()
-	op := Op{Me:me, Id:id, Req:args}
+	op := Op{Me: me, Id: id, Req: args}
 
 	_, _, leader := kv.rf.Start(op)
 
@@ -139,7 +134,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		kv.mu.Unlock()
 	}
 
-	<- ch
+	<-ch
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	kv.handlePutAppend(args.Key, args.Value)
@@ -147,21 +142,18 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	reply.WrongLeader = false
 	reply.Err = OK
 
-	return	
+	return
 }
 
-//
 // the tester calls Kill() when a RaftKV instance won't
 // be needed again. you are not required to do anything
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
-//
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
 }
 
-//
 // servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant key/value service.
@@ -173,7 +165,6 @@ func (kv *RaftKV) Kill() {
 // you don't need to snapshot.
 // StartKVServer() must return quickly, so it should start goroutines
 // for any long-running work.
-//
 func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister, maxraftstate int) *RaftKV {
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
@@ -183,13 +174,13 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.store = make(map[string]string)
+	kv.waiters = make(map[opWaitKey]chan struct{})
 
 	// Your initialization code here.
 	go kv.ApplyRoutine()
 
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
 
 	return kv
 }
