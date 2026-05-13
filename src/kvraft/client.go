@@ -44,24 +44,22 @@ func (ck *Clerk) getLeader() int {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-	
+
 	// You will have to modify this function.
 
 	args := GetArgs{Key:key}
-	reply := GetReply{}
 
 	for {
+		reply := GetReply{}
 		leader := ck.getLeader()
 
 		ok := ck.servers[leader].Call("RaftKV.Get", &args, &reply)
-		if !ok {
+		if !ok || reply.WrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
 			continue
 		}
-		//Success
-		break
+		return reply.Value
 	}
-	return reply.Value
 }
 
 //
@@ -78,21 +76,17 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 
 	args := PutAppendArgs{Key: key, Value: value, Op: op}
-	reply := PutAppendReply{}
 
 	for {
+		reply := PutAppendReply{}
 		leader := ck.getLeader()
 		ok := ck.servers[leader].Call("RaftKV.PutAppend", &args, &reply)
-
-		if !ok && reply.WrongLeader {
-			//TODO: handle wrong cachedleader
+		if !ok || reply.WrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
 			continue
 		}
-		//SUCCESS
 		break
-	}	
-	
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

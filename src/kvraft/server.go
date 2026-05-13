@@ -46,31 +46,33 @@ type RaftKV struct {
 }
 
 // Handle put or append. Caller must hold kv.mu.
-func (kv *RaftKV) handlePutAppend(key string, value string) {
-	curr, ok := kv.store[key]
-	if !ok {
-		kv.store[key] = value
-		return
+func (kv *RaftKV) handlePutAppend(pa *PutAppendArgs) {
+	if pa.Op == "Put" {
+		kv.store[pa.Key] = pa.Value
+	} else if pa.Op == "Append" {
+		kv.store[pa.Key] += pa.Value
 	}
-	kv.store[key] = curr + value
 }
 
 func (kv *RaftKV) ApplyRoutine() {
-	//TODO: Consistently pulls apply msgs off the channel and notifies waiting routines.
 	for {
 		msg := <-kv.applyCh
 
-		op := msg.Command.(Op)
+		op, ok := msg.Command.(Op)
+		if !ok {
+			continue
+		}
 
-		key := opWaitKey{Me: op.Me, Id: op.Id}
 		kv.mu.Lock()
-		ch, found := kv.waiters[key]
-		if found {
-			delete(kv.waiters, key)
+		if pa, ok := op.Req.(*PutAppendArgs); ok {
+			kv.handlePutAppend(pa)
+		}
+		wkey := opWaitKey{Me: op.Me, Id: op.Id}
+		if ch, found := kv.waiters[wkey]; found {
+			delete(kv.waiters, wkey)
 			close(ch)
 		}
 		kv.mu.Unlock()
-
 	}
 }
 
@@ -96,19 +98,21 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		close(ch)
 		delete(kv.waiters, waitKey)
 		kv.mu.Unlock()
+		return
 	}
 
 	<-ch
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	val, ok := kv.store[args.Key]
+	reply.WrongLeader = false
 	if !ok {
 		reply.Value = ""
+		reply.Err = ErrNoKey
 	} else {
 		reply.Value = val
+		reply.Err = OK
 	}
-	reply.WrongLeader = false
-	reply.Err = OK
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -132,17 +136,12 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		close(ch)
 		delete(kv.waiters, waitKey)
 		kv.mu.Unlock()
+		return
 	}
 
 	<-ch
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	kv.handlePutAppend(args.Key, args.Value)
-
 	reply.WrongLeader = false
 	reply.Err = OK
-
-	return
 }
 
 // the tester calls Kill() when a RaftKV instance won't
@@ -169,17 +168,16 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	// call gob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	gob.Register(Op{})
+	gob.Register(GetArgs{})
+	gob.Register(PutAppendArgs{})
 
 	kv := new(RaftKV)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.store = make(map[string]string)
 	kv.waiters = make(map[opWaitKey]chan struct{})
-
-	// Your initialization code here.
-	go kv.ApplyRoutine()
-
 	kv.applyCh = make(chan raft.ApplyMsg)
+	go kv.ApplyRoutine()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	return kv
