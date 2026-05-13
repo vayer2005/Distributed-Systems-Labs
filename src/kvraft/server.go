@@ -40,8 +40,20 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	waiters  map[opWaitKey]chan struct{}
-	id int //Atomically increasing opId
+	waiters map[opWaitKey]chan struct{}
+	id      int // atomically increasing op id
+	store   map[string]string // key value state
+}
+
+
+// Handle put or append. Caller must hold kv.mu.
+func (kv *RaftKV) handlePutAppend(key string, value string) {
+	curr, ok := kv.store[key]
+	if !ok {
+		kv.store[key] = value
+		return
+	}
+	kv.store[key] = curr + value
 }
 
 func (kv *RaftKV) ApplyRoutine() {
@@ -70,10 +82,38 @@ func (kv *RaftKV) ApplyRoutine() {
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	//TODO: Append the current get to log, wait for apply, once applied return
+	kv.mu.Lock()
+	id := kv.id
+	me := kv.me
+	kv.id++
+	waitKey := opWaitKey{Me: me, Id: id}
+	ch := make(chan struct{})
+	kv.waiters[waitKey] = ch
+	kv.mu.Unlock()
+	op := Op{Me:me, Id:id, Req:args}
 
+	_, _, leader := kv.rf.Start(op)
 
+	if !leader {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		kv.mu.Lock()
+		close(ch)
+		delete(kv.waiters, waitKey)
+		kv.mu.Unlock()
+	}
 
-
+	<- ch
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	val, ok  := kv.store[args.Key]
+	if !ok {
+		reply.Value = ""
+	} else {
+		reply.Value = val
+	}
+	reply.WrongLeader = false
+	reply.Err = OK
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -100,6 +140,9 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	<- ch
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	kv.handlePutAppend(args.Key, args.Value)
 
 	reply.WrongLeader = false
 	reply.Err = OK
@@ -139,6 +182,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv := new(RaftKV)
 	kv.me = me
 	kv.maxraftstate = maxraftstate
+	kv.store = make(map[string]string)
 
 	// Your initialization code here.
 	go kv.ApplyRoutine()
