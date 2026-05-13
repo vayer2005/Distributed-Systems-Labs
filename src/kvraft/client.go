@@ -8,7 +8,9 @@ import "math/big"
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leader int
+	leader   int
+	clientId int64 // random per clerk; stable for lifetime of this Clerk
+	id       int   // id of operation
 }
 
 func nrand() int64 {
@@ -23,6 +25,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// You'll have to add code here.
 	ck.leader = 0
+	ck.clientId = nrand()
 
 	return ck
 }
@@ -46,8 +49,8 @@ func (ck *Clerk) getLeader() int {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-
-	args := GetArgs{Key:key}
+	ck.id += 1
+	args := GetArgs{Key:key, Id: ck.id, Me: ck.clientId}
 
 	for {
 		reply := GetReply{}
@@ -74,8 +77,8 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-
-	args := PutAppendArgs{Key: key, Value: value, Op: op}
+	ck.id += 1
+	args := PutAppendArgs{Key: key, Value: value, Op: op, Id: ck.id, Me: ck.clientId}
 
 	for {
 		reply := PutAppendReply{}
