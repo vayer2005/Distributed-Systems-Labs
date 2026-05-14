@@ -57,8 +57,10 @@ func (ck *Clerk) Get(key string) string {
 		leader := ck.getLeader()
 
 		ok := ck.servers[leader].Call("RaftKV.Get", &args, &reply)
-		if !ok || reply.WrongLeader {
+		if reply.WrongLeader{
 			ck.leader = (ck.leader + 1) % len(ck.servers)
+			continue
+		} else if (!ok) {
 			continue
 		}
 		return reply.Value
@@ -84,8 +86,10 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		reply := PutAppendReply{}
 		leader := ck.getLeader()
 		ok := ck.servers[leader].Call("RaftKV.PutAppend", &args, &reply)
-		if !ok || reply.WrongLeader {
+		if reply.WrongLeader {
 			ck.leader = (ck.leader + 1) % len(ck.servers)
+			continue
+		} else if (!ok) {
 			continue
 		}
 		break

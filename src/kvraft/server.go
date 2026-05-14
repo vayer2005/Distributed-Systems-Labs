@@ -109,10 +109,10 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 			kv.mu.Lock()
 			chs := kv.waiters[waitKey]
 			delete(kv.waiters, waitKey)
-			kv.mu.Unlock()
 			for _, c := range chs {
 				close(c)
 			}
+			kv.mu.Unlock()
 			return
 		}
 	}
@@ -151,10 +151,10 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 			kv.mu.Lock()
 			chs := kv.waiters[waitKey]
 			delete(kv.waiters, waitKey)
-			kv.mu.Unlock()
 			for _, c := range chs {
 				close(c)
 			}
+			kv.mu.Unlock()
 			return
 		}
 	}
