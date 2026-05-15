@@ -6,9 +6,14 @@ import (
 	"log"
 	"raft"
 	"sync"
+	"time"
 )
 
 const Debug = 0
+
+// applyWaitTimeout bounds how long Get/PutAppend wait for Raft apply; after this
+// we drop waiters so the clerk can retry another server (e.g. partitioned leader).
+const applyWaitTimeout = 500 * time.Millisecond
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -87,6 +92,33 @@ func (kv *RaftKV) ApplyRoutine() {
 	}
 }
 
+// waitAppliedOrTimeout waits until ApplyRoutine closes ch, or times out and removes
+// all waiters for waitKey so RPC handlers do not block forever.
+func (kv *RaftKV) waitAppliedOrTimeout(waitKey opWaitKey, ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	case <-time.After(applyWaitTimeout):
+		kv.mu.Lock()
+		if chs, found := kv.waiters[waitKey]; found {
+			delete(kv.waiters, waitKey)
+			for _, c := range chs {
+				close(c)
+			}
+		}
+		kv.mu.Unlock()
+		return false
+	}
+}
+
+func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
+	_, isLeader := kv.rf.GetState()
+	if !isLeader {
+		return true, ErrWrongLeader
+	}
+	return false, ErrApplyTimeout
+}
+
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	//TODO: Append the current get to log, wait for apply, once applied return
@@ -117,7 +149,10 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 		}
 	}
 
-	<-ch
+	if !kv.waitAppliedOrTimeout(waitKey, ch) {
+		reply.WrongLeader, reply.Err = kv.getRaftLeader()
+		return
+	}
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 	val, ok := kv.store[args.Key]
@@ -159,7 +194,10 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		}
 	}
 
-	<-ch
+	if !kv.waitAppliedOrTimeout(waitKey, ch) {
+		reply.WrongLeader, reply.Err = kv.getRaftLeader()
+		return
+	}
 	reply.WrongLeader = false
 	reply.Err = OK
 }
