@@ -31,9 +31,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Id  int
+	Type string
+	ReqId int
 	Me  int64
-	Req any
+	Key string
+	Value string
 }
 
 type RaftKV struct {
@@ -45,70 +47,88 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	waiters     map[opWaitKey][]chan struct{}
+	results 	map[int]chan Op
 	store       map[string]string // key value state
-	lastApplied map[int64]int     // clientId -> highest applied request Id (at-most-once per Id)
+	lastApplied	map[int]int
 }
 
 // Handle put or append. Caller must hold kv.mu.
-func (kv *RaftKV) handlePutAppend(pa *PutAppendArgs) {
-	if pa.Op == "Put" {
-		kv.store[pa.Key] = pa.Value
-	} else if pa.Op == "Append" {
-		kv.store[pa.Key] += pa.Value
+func (kv *RaftKV) handlePutAppend(op *Op) {
+	if op.Type == "Put" {
+		kv.store[op.Key] = op.Value
+	} else if op.Type == "Append" {
+		kv.store[op.Key] += op.Value
+	}
+}
+
+func (kv *RaftKV) handleGet(op *Op) {
+	val, ok := kv.store[op.Key]
+	if ok {
+		op.Value = val
 	}
 }
 
 func (kv *RaftKV) ApplyRoutine() {
 	for {
-		msg := <-kv.applyCh
-
-		op, ok := msg.Command.(Op)
-		if !ok {
-			continue
-		}
-
+		msg := <- kv.applyCh
+		op := msg.Command.(Op)
+		idx := msg.Index
+		
 		kv.mu.Lock()
-
-		wkey := opWaitKey{Me: op.Me, Id: op.Id}
-		if pa, ok := op.Req.(*PutAppendArgs); ok {
-			if last, ok := kv.lastApplied[op.Me]; !ok || op.Id > last {
-				kv.handlePutAppend(pa)
-				kv.lastApplied[op.Me] = op.Id
-			}
-		} else if _, ok := op.Req.(*GetArgs); ok {
-			if last, ok := kv.lastApplied[op.Me]; !ok || op.Id > last {
-				kv.lastApplied[op.Me] = op.Id
+		ch, ok := kv.results[idx]
+		
+		if op.Type == "GET"  {
+			kv.handleGet(&op)
+		} else{
+			lastIdx, ok := kv.lastApplied[int(op.Me)]
+			if !ok || lastIdx < op.ReqId {
+				kv.lastApplied[int(op.Me)] = op.ReqId
+				kv.handlePutAppend(&op)
 			}
 		}
 
-		if chs, found := kv.waiters[wkey]; found {
-			for _, ch := range chs {
-				close(ch)
-			}
-			delete(kv.waiters, wkey)
+		if !ok {
+			ch = make(chan Op, 1)
+			kv.results[idx] = ch
 		}
 		kv.mu.Unlock()
+
+		ch <- op
 	}
+	
+}
+
+func (kv *RaftKV) isSameOp(op1 Op, op2 Op) bool {
+	res := op1.Type == op2.Type && op1.Key == op2.Key && op1.ReqId == op2.ReqId && op1.Me == op2.Me
+	return res
 }
 
 // waitAppliedOrTimeout waits until ApplyRoutine closes ch, or times out and removes
 // all waiters for waitKey so RPC handlers do not block forever.
-func (kv *RaftKV) waitAppliedOrTimeout(waitKey opWaitKey, ch <-chan struct{}) bool {
-	select {
-	case <-ch:
-		return true
-	case <-time.After(applyWaitTimeout):
-		kv.mu.Lock()
-		if chs, found := kv.waiters[waitKey]; found {
-			delete(kv.waiters, waitKey)
-			for _, c := range chs {
-				close(c)
-			}
-		}
-		kv.mu.Unlock()
-		return false
+func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
+
+	idx, _, leader := kv.rf.Start(op)
+
+	if !leader {
+		return false, op
 	}
+
+	kv.mu.Lock()
+
+	ch, ok := kv.results[idx]
+	if !ok {
+		ch = make(chan Op, 1)
+		kv.results[idx] = ch
+	}
+	kv.mu.Unlock()
+
+	select {
+		case appliedOp := <-ch:
+			return kv.isSameOp(op, appliedOp), appliedOp
+		case <-time.After(600 * time.Millisecond):
+			return false, op
+	}
+	
 }
 
 func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
@@ -121,85 +141,36 @@ func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	//TODO: Append the current get to log, wait for apply, once applied return
-	kv.mu.Lock()
-	id := args.Id
-	me := args.Me
+	//TODO wait for apply, once applied return
 
-	waitKey := opWaitKey{Me: me, Id: id}
-	ch := make(chan struct{})
-	kv.waiters[waitKey] = append(kv.waiters[waitKey], ch)
-	startHere := len(kv.waiters[waitKey]) == 1
-	kv.mu.Unlock()
-	op := Op{Me: me, Id: id, Req: args}
+	op := Op{Key: args.Key, Value: "", Type: "GET", ReqId: args.Id, Me: args.Me}
 
-	if startHere {
-		_, _, leader := kv.rf.Start(op)
-		if !leader {
-			reply.WrongLeader = true
-			reply.Err = ErrWrongLeader
-			kv.mu.Lock()
-			chs := kv.waiters[waitKey]
-			delete(kv.waiters, waitKey)
-			for _, c := range chs {
-				close(c)
-			}
-			kv.mu.Unlock()
-			return
-		}
-	}
+	success, appledOp := kv.waitAppliedOrTimeout(op)
 
-	if !kv.waitAppliedOrTimeout(waitKey, ch) {
-		reply.WrongLeader, reply.Err = kv.getRaftLeader()
-		return
-	}
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-	val, ok := kv.store[args.Key]
-	reply.WrongLeader = false
-	if !ok {
-		reply.Value = ""
-		reply.Err = ErrNoKey
-	} else {
-		reply.Value = val
-		reply.Err = OK
-	}
-}
-
-func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
-	// Your code here.
-	kv.mu.Lock()
-	id := args.Id
-	me := args.Me
-	waitKey := opWaitKey{Me: me, Id: id}
-	ch := make(chan struct{})
-	kv.waiters[waitKey] = append(kv.waiters[waitKey], ch)
-	startHere := len(kv.waiters[waitKey]) == 1
-	kv.mu.Unlock()
-	op := Op{Me: me, Id: id, Req: args}
-
-	if startHere {
-		_, _, leader := kv.rf.Start(op)
-		if !leader {
-			reply.WrongLeader = true
-			reply.Err = ErrWrongLeader
-			kv.mu.Lock()
-			chs := kv.waiters[waitKey]
-			delete(kv.waiters, waitKey)
-			for _, c := range chs {
-				close(c)
-			}
-			kv.mu.Unlock()
-			return
-		}
-	}
-
-	if !kv.waitAppliedOrTimeout(waitKey, ch) {
-		reply.WrongLeader, reply.Err = kv.getRaftLeader()
+	if !success {
+		reply.WrongLeader = true
+		reply.Err=ErrWrongLeader
 		return
 	}
 	reply.WrongLeader = false
 	reply.Err = OK
+	reply.Value = appledOp.Value
+	
+}
+
+func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
+	// Your code here.
+	op := Op{Key: args.Key, Value: args.Value, Type: args.Op, ReqId: args.Id, Me: args.Me}
+
+	success, _ := kv.waitAppliedOrTimeout(op)
+
+	if !success {
+		reply.WrongLeader = true
+		reply.Err=ErrWrongLeader
+		return
+	}
+	reply.WrongLeader = false
+	reply.Err = OK	
 }
 
 // the tester calls Kill() when a RaftKV instance won't
@@ -233,9 +204,10 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.me = me
 	kv.maxraftstate = maxraftstate
 	kv.store = make(map[string]string)
-	kv.lastApplied = make(map[int64]int)
-	kv.waiters = make(map[opWaitKey][]chan struct{})
-	kv.applyCh = make(chan raft.ApplyMsg)
+	//kv.lastApplied = make(map[int64]int)
+	kv.applyCh = make(chan raft.ApplyMsg, 2048)
+	kv.results = make(map[int]chan Op)
+	kv.lastApplied = make(map[int]int)
 	go kv.ApplyRoutine()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
