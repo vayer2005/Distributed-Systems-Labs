@@ -62,9 +62,6 @@ func (ck *Clerk) Get(key string) string {
 			ck.leader.Store((ck.leader.Load() + int64(1)) % int64(len(ck.servers)))
 			continue
 		}
-		if !ok || reply.Err == ErrApplyTimeout {
-			continue
-		}
 		return reply.Value
 	}
 }
@@ -86,12 +83,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 		reply := PutAppendReply{}
 		leader := ck.getLeader()
 		ok := ck.servers[leader].Call("RaftKV.PutAppend", &args, &reply)
-		
+
 		if !ok || reply.WrongLeader {
 			ck.leader.Store((ck.leader.Load() + int64(1)) % int64(len(ck.servers)))
-			continue
-		}
-		if reply.Err == ErrApplyTimeout {
 			continue
 		}
 		break
