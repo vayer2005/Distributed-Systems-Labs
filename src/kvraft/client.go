@@ -4,14 +4,15 @@ import (
 	"crypto/rand"
 	"labrpc"
 	"math/big"
+	"sync/atomic"
 )
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leader   int
-	clientId int64 // random per clerk; stable for lifetime of this Clerk
-	id       int   // id of operation
+	leader   atomic.Int64
+	clientId int64        // random per clerk; stable for lifetime of this Clerk
+	id       atomic.Int64 // id of operation
 }
 
 func nrand() int64 {
@@ -25,14 +26,15 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
 	// You'll have to add code here.
-	ck.leader = 0
+	ck.leader.Store(0)
 	ck.clientId = nrand()
+	ck.id.Store(0)
 
 	return ck
 }
 
-func (ck *Clerk) getLeader() int {
-	return ck.leader
+func (ck *Clerk) getLeader() int64 {
+	return ck.leader.Load()
 }
 
 // fetch the current value for a key.
@@ -48,8 +50,8 @@ func (ck *Clerk) getLeader() int {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
-	ck.id += 1
-	args := GetArgs{Key: key, Id: ck.id, Me: ck.clientId}
+	ck.id.Add(1)
+	args := GetArgs{Key: key, Id: int(ck.id.Load()), Me: ck.clientId}
 
 	for {
 		reply := GetReply{}
@@ -57,7 +59,7 @@ func (ck *Clerk) Get(key string) string {
 
 		ok := ck.servers[leader].Call("RaftKV.Get", &args, &reply)
 		if !ok || reply.WrongLeader {
-			ck.leader = (ck.leader + 1) % len(ck.servers)
+			ck.leader.Store((ck.leader.Load() + int64(1)) % int64(len(ck.servers)))
 			continue
 		}
 		if !ok || reply.Err == ErrApplyTimeout {
@@ -77,18 +79,19 @@ func (ck *Clerk) Get(key string) string {
 // arguments. and reply must be passed as a pointer.
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
-	ck.id += 1
-	args := PutAppendArgs{Key: key, Value: value, Op: op, Id: ck.id, Me: ck.clientId}
+	ck.id.Add(1)
+	args := PutAppendArgs{Key: key, Value: value, Op: op, Id: int(ck.id.Load()), Me: ck.clientId}
 
 	for {
 		reply := PutAppendReply{}
 		leader := ck.getLeader()
 		ok := ck.servers[leader].Call("RaftKV.PutAppend", &args, &reply)
+		
 		if !ok || reply.WrongLeader {
-			ck.leader = (ck.leader + 1) % len(ck.servers)
+			ck.leader.Store((ck.leader.Load() + int64(1)) % int64(len(ck.servers)))
 			continue
 		}
-		if !ok || reply.Err == ErrApplyTimeout {
+		if reply.Err == ErrApplyTimeout {
 			continue
 		}
 		break

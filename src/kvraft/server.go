@@ -105,12 +105,12 @@ func (kv *RaftKV) isSameOp(op1 Op, op2 Op) bool {
 
 // waitAppliedOrTimeout waits until ApplyRoutine closes ch, or times out and removes
 // all waiters for waitKey so RPC handlers do not block forever.
-func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
+func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op, Err) {
 
 	idx, _, leader := kv.rf.Start(op)
 
 	if !leader {
-		return false, op
+		return false, op, ErrWrongLeader
 	}
 
 	kv.mu.Lock()
@@ -124,9 +124,9 @@ func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 
 	select {
 		case appliedOp := <-ch:
-			return kv.isSameOp(op, appliedOp), appliedOp
+			return kv.isSameOp(op, appliedOp), appliedOp, OK
 		case <-time.After(600 * time.Millisecond):
-			return false, op
+			return false, op, ErrApplyTimeout
 	}
 	
 }
@@ -136,7 +136,7 @@ func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
 	if !isLeader {
 		return true, ErrWrongLeader
 	}
-	return false, ErrApplyTimeout
+	return false, OK
 }
 
 func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
@@ -145,15 +145,15 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 	op := Op{Key: args.Key, Value: "", Type: "GET", ReqId: args.Id, Me: args.Me}
 
-	success, appledOp := kv.waitAppliedOrTimeout(op)
+	success, appledOp, err := kv.waitAppliedOrTimeout(op)
 
 	if !success {
 		reply.WrongLeader = true
-		reply.Err=ErrWrongLeader
+		reply.Err=err
 		return
 	}
 	reply.WrongLeader = false
-	reply.Err = OK
+	reply.Err = err
 	reply.Value = appledOp.Value
 	
 }
@@ -162,11 +162,11 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	op := Op{Key: args.Key, Value: args.Value, Type: args.Op, ReqId: args.Id, Me: args.Me}
 
-	success, _ := kv.waitAppliedOrTimeout(op)
+	success, _, err := kv.waitAppliedOrTimeout(op)
 
 	if !success {
 		reply.WrongLeader = true
-		reply.Err=ErrWrongLeader
+		reply.Err=err
 		return
 	}
 	reply.WrongLeader = false
