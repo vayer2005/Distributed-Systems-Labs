@@ -61,6 +61,9 @@ type Raft struct {
 	commitIndex int // Idx of highest log entry known to be committed by consensus
 	lastApplied int // Idx of highest log entry applied to state machine
 
+	lastIncludedIndex int
+	lastIncludedTerm int
+
 	serverState int // follower, leader, candidate
 
 	//Volatile state on leaders
@@ -110,6 +113,13 @@ type AppendEntriesReply struct {
 	XTerm  int
 	XIndex int
 	XLen   int
+}
+type InstallSnapshotArgs struct {
+
+}
+
+type InstallSnapshotReply struct {
+
 }
 
 // return currentTerm and whether this server
@@ -163,11 +173,50 @@ func (rf *Raft) readPersist(data []byte) {
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (3D).
+	rf.mu.Lock()
+
+	if index > rf.lastApplied || index <= rf.lastIncludedIndex {
+		return
+	}
+
+	rf.persister.SaveSnapshot(snapshot)
+
+	//Index from which we need to cut.
+	cutIdx := index - rf.lastIncludedIndex
+
+	rf.lastIncludedIndex = index
+
+	if cutIdx > 0 {
+		rf.lastIncludedTerm = rf.log[cutIdx-1].Term
+	}
+	rf.log = rf.log[cutIdx:]
+	rf.persist()
+
+	rf.mu.Unlock()
 
 }
 
 func randomElectionTimeout() int64 {
 	return 250 + (rand.Int63() % 300)
+}
+
+// Raft index of the last entry in the log 
+func (rf *Raft) lastLogIndex() int {
+	return rf.lastIncludedIndex + len(rf.log)
+}
+
+// The term of Raft log entry i.
+func (rf *Raft) logTerm(i int) (int, bool) {
+	if i < 0 {
+		return 0, false
+	}
+	if i == rf.lastIncludedIndex {
+		return rf.lastIncludedTerm, true
+	}
+	if i <= rf.lastIncludedIndex || i > rf.lastLogIndex() {
+		return 0, false
+	}
+	return rf.log[i-rf.lastIncludedIndex-1].Term, true
 }
 
 // advanceCommit sets commitIndex to the largest index > old commitIndex that is stored
@@ -256,20 +305,30 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 	rf.serverState = follower
 
-	lastIdx := len(rf.log) - 1
-	if args.PrevLogIndex > lastIdx {
+	lastLogIndex := rf.lastLogIndex()
+	if args.PrevLogIndex > lastLogIndex {
 		// Follower log is too short.
 		reply.XTerm = -1
-		reply.XLen = len(rf.log)
+		reply.XLen = lastLogIndex + 1
 		rf.electionDeadline = time.Now().Add(time.Duration(randomElectionTimeout()) * time.Millisecond)
 		return
 	}
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		// Term conflict: tell the leader about the conflicting term and
-		// the first index where that term appears so it can skip back fast.
-		xTerm := rf.log[args.PrevLogIndex].Term
+
+	prevTerm, ok := rf.logTerm(args.PrevLogIndex)
+	if !ok || prevTerm != args.PrevLogTerm {
+
+		if args.PrevLogIndex <= rf.lastIncludedIndex {
+			rf.electionDeadline = time.Now().Add(time.Duration(randomElectionTimeout()) * time.Millisecond)
+			return
+		}
+
+		xTerm := rf.log[args.PrevLogIndex-rf.lastIncludedIndex-1].Term
 		xIndex := args.PrevLogIndex
-		for xIndex > 0 && rf.log[xIndex-1].Term == xTerm {
+		for xIndex > rf.lastIncludedIndex+1 {
+			t, ok := rf.logTerm(xIndex - 1)
+			if !ok || t != xTerm {
+				break
+			}
 			xIndex--
 		}
 		reply.XTerm = xTerm
@@ -278,19 +337,20 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	cut := args.PrevLogIndex - rf.lastIncludedIndex
 	if len(args.Entries) > 0 {
-		rf.log = rf.log[:args.PrevLogIndex+1]
+		rf.log = rf.log[:cut]
 		rf.log = append(rf.log, args.Entries...)
-	} else if lastIdx > args.PrevLogIndex {
-		// Heartbeat
-		rf.log = rf.log[:args.PrevLogIndex+1]
+	} else if lastLogIndex > args.PrevLogIndex {
+		// Heartbeat — drop divergent suffix.
+		rf.log = rf.log[:cut]
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = args.LeaderCommit
 	}
 	// Truncation can shrink the log while commitIndex stayed high; always clamp.
-	lastNew := len(rf.log) - 1
+	lastNew := rf.lastLogIndex()
 	if rf.commitIndex > lastNew {
 		rf.commitIndex = lastNew
 	}
@@ -324,8 +384,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.serverState = follower
 	}
 
-	lastIdx := len(rf.log) - 1
-	lastTerm := rf.log[lastIdx].Term
+	lastIdx := rf.lastIncludedIndex
+	lastIdx += len(rf.log)
+
+	lastTerm := rf.lastIncludedTerm
+	if (len(rf.log) > 0) {
+		lastTerm = rf.log[len(rf.log)-1].Term
+	}
 
 	upToDate := true
 	upToDate = args.LastLogTerm > lastTerm || (args.LastLogTerm == lastTerm && args.LastLogIndex >= lastIdx)
@@ -391,7 +456,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	rf.log = append(rf.log, LogEntry{Term: rf.currentTerm, Command: command})
 
-	index := len(rf.log) - 1
+	index := rf.lastLogIndex()
 	rf.matchIndex[rf.me] = index
 
 	for i := range rf.peers {
@@ -401,8 +466,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		peer := i
 		next := rf.nextIndex[peer]
 		prevIdx := next - 1
-		prevTerm := rf.log[prevIdx].Term
-		entries := append([]LogEntry(nil), rf.log[next:]...)
+
+		prevTerm, _ := rf.logTerm(prevIdx)
+		entries := append([]LogEntry(nil), rf.log[next-rf.lastIncludedIndex-1:]...)
 		leaderCommit := rf.commitIndex
 		term := rf.currentTerm
 		go func(p, prevI, prevT, lc, t int, ent []LogEntry) {
@@ -622,12 +688,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (3A, 3B, 3C).
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+	rf.lastIncludedIndex = 0
+	rf.lastIncludedTerm = 0
 
 	rf.applyCh = applyCh
 
 	rf.serverState = follower
 	rf.votedFor = -1
-	rf.log = []LogEntry{{Term: 0}} // dummy at index 0
+	rf.log = []LogEntry{}
 
 	n := len(peers)
 	rf.nextIndex = make([]int, n)
