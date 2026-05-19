@@ -95,7 +95,7 @@ func (kv *RaftKV) ApplyRoutine() {
 			if d.Decode(&store) != nil || d.Decode(&lastApplied) != nil {
 				continue
 			}
-			
+
 			kv.mu.Lock()
 			kv.store = store
 			kv.lastApplied = lastApplied
@@ -118,15 +118,14 @@ func (kv *RaftKV) ApplyRoutine() {
 			}
 		}
 
-		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate {
-			kv.sendSnapshot(idx)
-		}
-
 		if !ok1 {
 			ch = make(chan Op, 1)
 			kv.results[idx] = ch
 		}
 		kv.mu.Unlock()
+		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate/kv.rf.NumPeers() {
+			kv.sendSnapshot(idx)
+		}
 
 		ch <- op
 	}

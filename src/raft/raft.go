@@ -33,6 +33,10 @@ type LogEntry struct {
 	Command interface{}
 }
 
+func (rf *Raft) NumPeers() int{
+	return len(rf.peers)
+}
+
 // ApplyMsg carries a committed Raft entry to the service or tester on applyCh.
 type ApplyMsg struct {
 	Index       int
@@ -555,6 +559,7 @@ func (rf *Raft) handleSendInstallSnapshot(peer int) {
 	}
 
 	rf.advanceCommit()
+	rf.persist()
 
 }
 
@@ -628,7 +633,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 }
 
 func (rf *Raft) initLeaderIndex() {
-	//TODO: Set nextIndex and lastIndex vars for leader upon election
 
 	lastLogIndex := rf.lastLogIndex()
 	next := lastLogIndex + 1
@@ -783,9 +787,13 @@ func (rf *Raft) BackgroundApplyRoutine() {
 			time.Sleep(10 * time.Millisecond)
 			rf.mu.Lock()
 		}
-		if rf.killed() || rf.lastLogIndex() == rf.lastIncludedIndex{
+		if rf.killed() {
 			rf.mu.Unlock()
 			return
+		}
+		if rf.lastLogIndex() == rf.lastIncludedIndex {
+			rf.mu.Unlock()
+			continue
 		}
 		rf.lastApplied++
 		idx := rf.lastApplied
@@ -843,7 +851,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.lastApplied = rf.lastIncludedIndex
-	rf.commitIndex =rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
 
 	rf.applyCh <- ApplyMsg{
 		Index:       rf.lastIncludedIndex,
