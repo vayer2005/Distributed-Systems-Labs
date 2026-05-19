@@ -783,7 +783,7 @@ func (rf *Raft) BackgroundApplyRoutine() {
 			time.Sleep(10 * time.Millisecond)
 			rf.mu.Lock()
 		}
-		if rf.killed() {
+		if rf.killed() || rf.lastLogIndex() == rf.lastIncludedIndex{
 			rf.mu.Unlock()
 			return
 		}
@@ -843,7 +843,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 	rf.lastApplied = rf.lastIncludedIndex
-	rf.commitIndex = rf.lastIncludedIndex
+	rf.commitIndex =rf.lastIncludedIndex
 
 	rf.applyCh <- ApplyMsg{
 		Index:       rf.lastIncludedIndex,
