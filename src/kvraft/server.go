@@ -73,7 +73,7 @@ func (kv *RaftKV) handleGet(op *Op) {
 	}
 }
 
-func (kv *RaftKV) handleSnapshot(raftIndex int) {
+func (kv *RaftKV) sendSnapshot(raftIndex int) {
 	kv.mu.Lock()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
@@ -94,8 +94,10 @@ func (kv *RaftKV) ApplyRoutine() {
 			var store map[string]string
 			var lastApplied map[int]int
 
-			d.Decode(&store)
-			d.Decode(&lastApplied)
+			if d.Decode(&store) != nil || d.Decode(&lastApplied) != nil {
+				continue
+			}
+			
 			kv.mu.Lock()
 			kv.store = store
 			kv.lastApplied = lastApplied
@@ -125,7 +127,7 @@ func (kv *RaftKV) ApplyRoutine() {
 		kv.mu.Unlock()
 
 		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate {
-			kv.handleSnapshot(idx)
+			kv.sendSnapshot(idx)
 		}
 
 		ch <- op

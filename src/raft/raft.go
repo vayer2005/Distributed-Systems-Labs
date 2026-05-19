@@ -152,8 +152,13 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.lastIncludedIndex = args.LastIncludedIndex
 	rf.lastIncludedTerm = args.LastIncludedTerm
-	rf.lastApplied = args.LastIncludedIndex
-	rf.commitIndex = args.LastIncludedIndex
+	if rf.lastApplied < args.LastIncludedIndex {
+		rf.lastApplied = args.LastIncludedIndex
+	}
+	if rf.commitIndex < args.LastIncludedIndex {
+		rf.commitIndex = args.LastIncludedIndex
+	}
+
 	reply.Term = rf.currentTerm
 	rf.log = []LogEntry{}
 
@@ -212,7 +217,7 @@ func (rf *Raft) readPersist(data []byte) {
 	var votedFor int
 	var currentTerm int
 	var lastIncludedIndex int
-	var lastIncludedTerm int 
+	var lastIncludedTerm int
 	var log []LogEntry
 	if d.Decode(&votedFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
 		return
@@ -814,6 +819,7 @@ func (rf *Raft) Kill() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
+
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
@@ -836,6 +842,14 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.lastApplied = rf.lastIncludedIndex
+	rf.commitIndex = rf.lastIncludedIndex
+
+	rf.applyCh <- ApplyMsg{
+		Index:       rf.lastIncludedIndex,
+		UseSnapshot: true,
+		Snapshot:    rf.persister.snapshot,
+	}
 
 	go rf.ticker()
 	go rf.BackgroundApplyRoutine()
