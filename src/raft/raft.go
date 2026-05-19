@@ -196,6 +196,8 @@ func (rf *Raft) persist() {
 	e.Encode(rf.votedFor)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.log)
+	e.Encode(rf.lastIncludedIndex)
+	e.Encode(rf.lastIncludedTerm)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -209,14 +211,18 @@ func (rf *Raft) readPersist(data []byte) {
 	d := gob.NewDecoder(r)
 	var votedFor int
 	var currentTerm int
+	var lastIncludedIndex int
+	var lastIncludedTerm int 
 	var log []LogEntry
-	if d.Decode(&votedFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil {
+	if d.Decode(&votedFor) != nil || d.Decode(&currentTerm) != nil || d.Decode(&log) != nil || d.Decode(&lastIncludedIndex) != nil || d.Decode(&lastIncludedTerm) != nil {
 		return
 	}
 	rf.mu.Lock()
 	rf.votedFor = votedFor
 	rf.currentTerm = currentTerm
 	rf.log = log
+	rf.lastIncludedIndex = lastIncludedIndex
+	rf.lastIncludedTerm = lastIncludedTerm
 	rf.mu.Unlock()
 }
 
@@ -272,7 +278,7 @@ func (rf *Raft) lastLogTerm() int {
 // Caller must hold rf.mu.
 func (rf *Raft) advanceCommit() {
 	for n := rf.lastLogIndex(); n > rf.commitIndex; n-- {
-		if n == rf.lastIncludedIndex {
+		if n <= rf.lastIncludedIndex {
 			if rf.lastIncludedTerm != rf.currentTerm {
 				continue
 			}
