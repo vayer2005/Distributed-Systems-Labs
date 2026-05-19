@@ -369,7 +369,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		rf.electionDeadline = time.Now().Add(time.Duration(randomElectionTimeout()) * time.Millisecond)
 		return
 	}
-	prevTerm := rf.lastLogTerm()
+	prevTerm := rf.lastIncludedTerm
+	if args.PrevLogIndex > rf.lastIncludedIndex {
+		prevTerm = rf.log[args.PrevLogIndex-rf.lastIncludedIndex-1].Term
+	}
 
 	if prevTerm != args.PrevLogTerm {
 
@@ -578,7 +581,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			continue
 		}
 		prevIdx := next - 1
-		
+
 		//TODO: TRY LAST LOG TERM
 		prevTerm := rf.lastIncludedTerm
 		if prevIdx > rf.lastIncludedIndex {

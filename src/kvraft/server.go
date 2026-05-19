@@ -32,10 +32,10 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Type string
+	Type  string
 	ReqId int
-	Me  int64
-	Key string
+	Me    int64
+	Key   string
 	Value string
 }
 
@@ -48,15 +48,14 @@ type RaftKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	results 	map[int]chan Op
+	results     map[int]chan Op
 	store       map[string]string // key value state
-	lastApplied	map[int]int
+	lastApplied map[int]int
 }
 type SnapshotData struct {
-    Store       map[string]string
-    LastApplied map[int]int
+	Store       map[string]string
+	LastApplied map[int]int
 }
-
 
 // Handle put or append. Caller must hold kv.mu.
 func (kv *RaftKV) handlePutAppend(op *Op) {
@@ -75,17 +74,19 @@ func (kv *RaftKV) handleGet(op *Op) {
 }
 
 func (kv *RaftKV) handleSnapshot(raftIndex int) {
+	kv.mu.Lock()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	e.Encode(kv.store)
 	e.Encode(kv.lastApplied)
 
 	kv.rf.Snapshot(raftIndex, w.Bytes())
+	kv.mu.Unlock()
 }
 
 func (kv *RaftKV) ApplyRoutine() {
 	for {
-		msg := <- kv.applyCh
+		msg := <-kv.applyCh
 		if msg.UseSnapshot {
 			data := msg.Snapshot
 			r := bytes.NewBuffer(data)
@@ -103,34 +104,33 @@ func (kv *RaftKV) ApplyRoutine() {
 		}
 		op := msg.Command.(Op)
 		idx := msg.Index
-		
+
 		kv.mu.Lock()
-		ch, ok := kv.results[idx]
-		
-		if op.Type == "GET"  {
+		ch, ok1 := kv.results[idx]
+
+		if op.Type == "GET" {
 			kv.handleGet(&op)
-		} else{
-			lastIdx, ok := kv.lastApplied[int(op.Me)]
-			if !ok || lastIdx < op.ReqId {
+		} else {
+			lastIdx, ok2 := kv.lastApplied[int(op.Me)]
+			if !ok2 || lastIdx < op.ReqId {
 				kv.lastApplied[int(op.Me)] = op.ReqId
 				kv.handlePutAppend(&op)
 			}
 		}
 
-		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate {
-			kv.handleSnapshot(idx)
-		}
-		if !ok {
+		if !ok1 {
 			ch = make(chan Op, 1)
 			kv.results[idx] = ch
 		}
 		kv.mu.Unlock()
 
-		
+		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate {
+			kv.handleSnapshot(idx)
+		}
 
 		ch <- op
 	}
-	
+
 }
 
 func (kv *RaftKV) isSameOp(op1 Op, op2 Op) bool {
@@ -158,12 +158,12 @@ func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 	kv.mu.Unlock()
 
 	select {
-		case appliedOp := <-ch:
-			return kv.isSameOp(op, appliedOp), appliedOp
-		case <-time.After(600 * time.Millisecond):
-			return false, op
+	case appliedOp := <-ch:
+		return kv.isSameOp(op, appliedOp), appliedOp
+	case <-time.After(600 * time.Millisecond):
+		return false, op
 	}
-	
+
 }
 
 func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
@@ -184,13 +184,13 @@ func (kv *RaftKV) Get(args *GetArgs, reply *GetReply) {
 
 	if !success {
 		reply.WrongLeader = true
-		reply.Err=ErrWrongLeader
+		reply.Err = ErrWrongLeader
 		return
 	}
 	reply.WrongLeader = false
 	reply.Err = OK
 	reply.Value = appledOp.Value
-	
+
 }
 
 func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
@@ -201,11 +201,11 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if !success {
 		reply.WrongLeader = true
-		reply.Err=ErrWrongLeader
+		reply.Err = ErrWrongLeader
 		return
 	}
 	reply.WrongLeader = false
-	reply.Err = OK	
+	reply.Err = OK
 }
 
 // the tester calls Kill() when a RaftKV instance won't
