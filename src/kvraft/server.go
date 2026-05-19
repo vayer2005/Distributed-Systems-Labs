@@ -1,6 +1,7 @@
 package raftkv
 
 import (
+	"bytes"
 	"encoding/gob"
 	"labrpc"
 	"log"
@@ -51,6 +52,11 @@ type RaftKV struct {
 	store       map[string]string // key value state
 	lastApplied	map[int]int
 }
+type SnapshotData struct {
+    Store       map[string]string
+    LastApplied map[int]int
+}
+
 
 // Handle put or append. Caller must hold kv.mu.
 func (kv *RaftKV) handlePutAppend(op *Op) {
@@ -68,9 +74,33 @@ func (kv *RaftKV) handleGet(op *Op) {
 	}
 }
 
+func (kv *RaftKV) handleSnapshot(raftIndex int) {
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(kv.store)
+	e.Encode(kv.lastApplied)
+
+	kv.rf.Snapshot(raftIndex, w.Bytes())
+}
+
 func (kv *RaftKV) ApplyRoutine() {
 	for {
 		msg := <- kv.applyCh
+		if msg.UseSnapshot {
+			data := msg.Snapshot
+			r := bytes.NewBuffer(data)
+			d := gob.NewDecoder(r)
+			var store map[string]string
+			var lastApplied map[int]int
+
+			d.Decode(&store)
+			d.Decode(&lastApplied)
+			kv.mu.Lock()
+			kv.store = store
+			kv.lastApplied = lastApplied
+			kv.mu.Unlock()
+			continue
+		}
 		op := msg.Command.(Op)
 		idx := msg.Index
 		
@@ -87,11 +117,16 @@ func (kv *RaftKV) ApplyRoutine() {
 			}
 		}
 
+		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate {
+			kv.handleSnapshot(idx)
+		}
 		if !ok {
 			ch = make(chan Op, 1)
 			kv.results[idx] = ch
 		}
 		kv.mu.Unlock()
+
+		
 
 		ch <- op
 	}
