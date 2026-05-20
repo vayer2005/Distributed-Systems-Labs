@@ -115,8 +115,6 @@ func (kv *RaftKV) ApplyRoutine() {
 			if !ok2 || lastIdx < op.ReqId {
 				kv.lastApplied[int(op.Me)] = op.ReqId
 				kv.handlePutAppend(&op)
-				kv.mu.Unlock()
-				continue
 			}
 		}
 
@@ -129,10 +127,8 @@ func (kv *RaftKV) ApplyRoutine() {
 			kv.sendSnapshot(idx)
 		}
 
-		select {
-		case ch <- op:
-		default:
-		}
+		ch <- op
+
 	}
 
 }
