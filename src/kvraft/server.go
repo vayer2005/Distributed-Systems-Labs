@@ -51,10 +51,12 @@ type RaftKV struct {
 	results     map[int]chan Op
 	store       map[string]string // key value state
 	lastApplied map[int]int
+	lastIncludedIndex int // last index applied to the sm
 }
 type SnapshotData struct {
 	Store       map[string]string
 	LastApplied map[int]int
+	LastIncludedIndex int
 }
 
 // Handle put or append. Caller must hold kv.mu.
@@ -78,6 +80,7 @@ func (kv *RaftKV) sendSnapshot(raftIndex int) {
 	e := gob.NewEncoder(w)
 	e.Encode(kv.store)
 	e.Encode(kv.lastApplied)
+	e.Encode(kv.lastIncludedIndex)
 
 	kv.rf.Snapshot(raftIndex, w.Bytes())
 }
@@ -91,14 +94,17 @@ func (kv *RaftKV) ApplyRoutine() {
 			d := gob.NewDecoder(r)
 			var store map[string]string
 			var lastApplied map[int]int
-
-			if d.Decode(&store) != nil || d.Decode(&lastApplied) != nil {
+			var lastIncludedIndex int
+			if d.Decode(&store) != nil || d.Decode(&lastApplied) != nil || d.Decode(&lastIncludedIndex) != nil {
 				continue
 			}
 
 			kv.mu.Lock()
-			kv.store = store
-			kv.lastApplied = lastApplied
+			if lastIncludedIndex > kv.lastIncludedIndex {
+				kv.lastIncludedIndex = lastIncludedIndex
+				kv.store = store
+				kv.lastApplied = lastApplied
+			}
 			kv.mu.Unlock()
 			continue
 		}
@@ -115,6 +121,7 @@ func (kv *RaftKV) ApplyRoutine() {
 			if !ok2 || lastIdx < op.ReqId {
 				kv.lastApplied[int(op.Me)] = op.ReqId
 				kv.handlePutAppend(&op)
+				kv.lastIncludedIndex = idx
 			}
 		}
 
@@ -156,7 +163,7 @@ func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 		kv.results[idx] = ch
 	}
 	kv.mu.Unlock()
-
+	
 	select {
 	case appliedOp := <-ch:
 		return kv.isSameOp(op, appliedOp), appliedOp
@@ -242,6 +249,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	//kv.lastApplied = make(map[int64]int)
 	kv.applyCh = make(chan raft.ApplyMsg, 2048)
 	kv.results = make(map[int]chan Op)
+	kv.lastIncludedIndex = 0
 	kv.lastApplied = make(map[int]int)
 	go kv.ApplyRoutine()
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)

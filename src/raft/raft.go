@@ -171,7 +171,7 @@ func (rf *Raft) InstallSnapshot(args *InstallSnapshotArgs, reply *InstallSnapsho
 
 	rf.mu.Unlock()
 	rf.applyCh <- ApplyMsg{
-		Index:       rf.lastIncludedIndex,
+		Index:       rf.lastApplied,
 		UseSnapshot: true,
 		Snapshot:    args.Data,
 	}
@@ -257,6 +257,8 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 	if cutIdx > 0 {
 		rf.lastIncludedTerm = rf.log[cutIdx-1].Term
+	} else {
+		rf.lastIncludedTerm = rf.currentTerm
 	}
 	rf.log = rf.log[cutIdx:]
 	rf.persist()
@@ -854,7 +856,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.commitIndex = rf.lastIncludedIndex
 
 	rf.applyCh <- ApplyMsg{
-		Index:       rf.lastIncludedIndex,
+		Index:       rf.lastApplied,
 		UseSnapshot: true,
 		Snapshot:    rf.persister.snapshot,
 	}
