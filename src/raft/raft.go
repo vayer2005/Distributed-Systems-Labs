@@ -33,7 +33,7 @@ type LogEntry struct {
 	Command interface{}
 }
 
-func (rf *Raft) NumPeers() int{
+func (rf *Raft) NumPeers() int {
 	return len(rf.peers)
 }
 

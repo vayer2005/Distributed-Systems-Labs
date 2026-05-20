@@ -115,6 +115,8 @@ func (kv *RaftKV) ApplyRoutine() {
 			if !ok2 || lastIdx < op.ReqId {
 				kv.lastApplied[int(op.Me)] = op.ReqId
 				kv.handlePutAppend(&op)
+				kv.mu.Unlock()
+				continue
 			}
 		}
 
@@ -127,7 +129,10 @@ func (kv *RaftKV) ApplyRoutine() {
 			kv.sendSnapshot(idx)
 		}
 
-		ch <- op
+		select {
+		case ch <- op:
+		default:
+		}
 	}
 
 }
@@ -213,7 +218,7 @@ func (kv *RaftKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 // turn off debug output from this instance.
 func (kv *RaftKV) Kill() {
 	kv.rf.Kill()
-	// Your code here, if desired.
+	// Your code here, if desired
 }
 
 // servers[] contains the ports of the set of
