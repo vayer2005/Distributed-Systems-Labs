@@ -76,12 +76,13 @@ func (kv *RaftKV) handleGet(op *Op) {
 }
 
 func (kv *RaftKV) sendSnapshot(raftIndex int) {
+	kv.mu.Lock()
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
 	e.Encode(kv.store)
 	e.Encode(kv.lastApplied)
 	e.Encode(kv.lastIncludedIndex)
-
+	kv.mu.Unlock()
 	kv.rf.Snapshot(raftIndex, w.Bytes())
 }
 
@@ -130,6 +131,7 @@ func (kv *RaftKV) ApplyRoutine() {
 			kv.results[idx] = ch
 		}
 		kv.mu.Unlock()
+		
 		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate/kv.rf.NumPeers() {
 			kv.sendSnapshot(idx)
 		}
