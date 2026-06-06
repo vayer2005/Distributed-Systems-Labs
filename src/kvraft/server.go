@@ -113,8 +113,6 @@ func (kv *RaftKV) ApplyRoutine() {
 		idx := msg.Index
 
 		kv.mu.Lock()
-		ch, ok1 := kv.results[idx]
-
 		if op.Type == "GET" {
 			kv.handleGet(&op)
 		} else {
@@ -125,18 +123,19 @@ func (kv *RaftKV) ApplyRoutine() {
 				kv.lastIncludedIndex = idx
 			}
 		}
-
-		if !ok1 {
-			ch = make(chan Op, 1)
-			kv.results[idx] = ch
-		}
+		ch, notify := kv.results[idx]
 		kv.mu.Unlock()
-		
+
 		if kv.maxraftstate > 0 && kv.rf.RaftSize() >= kv.maxraftstate/kv.rf.NumPeers() {
 			kv.sendSnapshot(idx)
 		}
 
-		ch <- op
+		if notify {
+			select {
+			case ch <- op:
+			default:
+			}
+		}
 
 	}
 
@@ -157,19 +156,21 @@ func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 		return false, op
 	}
 
+	ch := make(chan Op, 1)
 	kv.mu.Lock()
-
-	ch, ok := kv.results[idx]
-	if !ok {
-		ch = make(chan Op, 1)
-		kv.results[idx] = ch
-	}
+	kv.results[idx] = ch
 	kv.mu.Unlock()
-	
+
 	select {
 	case appliedOp := <-ch:
+		kv.mu.Lock()
+		delete(kv.results, idx)
+		kv.mu.Unlock()
 		return kv.isSameOp(op, appliedOp), appliedOp
-	case <-time.After(600 * time.Millisecond):
+	case <-time.After(applyWaitTimeout):
+		kv.mu.Lock()
+		delete(kv.results, idx)
+		kv.mu.Unlock()
 		return false, op
 	}
 
