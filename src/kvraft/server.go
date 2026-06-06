@@ -146,8 +146,23 @@ func (kv *RaftKV) isSameOp(op1 Op, op2 Op) bool {
 	return res
 }
 
-// waitAppliedOrTimeout waits until ApplyRoutine closes ch, or times out and removes
-// all waiters for waitKey so RPC handlers do not block forever.
+// opCompleted reports whether a Put/Append is already in the state machine.
+// GET must always wait for Raft apply — never short-circuit reads.
+func (kv *RaftKV) opCompleted(op Op) (bool, Op) {
+	if op.Type == "GET" {
+		return false, op
+	}
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	lastIdx, ok := kv.lastApplied[int(op.Me)]
+	if ok && lastIdx >= op.ReqId {
+		return true, op
+	}
+	return false, op
+}
+
+// waitAppliedOrTimeout waits until ApplyRoutine notifies ch, or times out so the
+// clerk can retry another server (e.g. partitioned leader).
 func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 
 	idx, _, leader := kv.rf.Start(op)
@@ -161,19 +176,43 @@ func (kv *RaftKV) waitAppliedOrTimeout(op Op) (bool, Op) {
 	kv.results[idx] = ch
 	kv.mu.Unlock()
 
-	select {
-	case appliedOp := <-ch:
+	cleanup := func() {
 		kv.mu.Lock()
 		delete(kv.results, idx)
 		kv.mu.Unlock()
-		return kv.isSameOp(op, appliedOp), appliedOp
-	case <-time.After(applyWaitTimeout):
-		kv.mu.Lock()
-		delete(kv.results, idx)
-		kv.mu.Unlock()
-		return false, op
 	}
 
+	deadline := time.Now().Add(applyWaitTimeout)
+	for {
+		// Put/Append may have been applied before we registered (or notify was dropped).
+		if done, applied := kv.opCompleted(op); done {
+			cleanup()
+			return true, applied
+		}
+
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		select {
+		case appliedOp := <-ch:
+			cleanup()
+			return kv.isSameOp(op, appliedOp), appliedOp
+		case <-time.After(remaining):
+		}
+	}
+
+	cleanup()
+	if done, applied := kv.opCompleted(op); done {
+		return true, applied
+	}
+	select {
+	case appliedOp := <-ch:
+		return kv.isSameOp(op, appliedOp), appliedOp
+	default:
+	}
+	return false, op
 }
 
 func (kv *RaftKV) getRaftLeader() (wrongLeader bool, err Err) {
