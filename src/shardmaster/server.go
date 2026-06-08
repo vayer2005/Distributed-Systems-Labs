@@ -123,18 +123,6 @@ func (sm *ShardMaster) Rebalance(newConfig *Config) {
 }
 
 
-//Caller holds Mu. joins a single server to the config
-func (sm *ShardMaster) handleJoin(gid int, servers []string, newConfig *Config) {
-	prevConfig := sm.configs[len(sm.configs)-1]
-	
-	_, exists := prevConfig.Groups[gid]
-	if (!exists) {
-		sm.numGroups+=1
-	} 
-	newConfig.Groups[gid] = servers
-	
-}
-
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
