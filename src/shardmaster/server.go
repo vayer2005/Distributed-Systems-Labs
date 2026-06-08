@@ -1,10 +1,9 @@
 package shardmaster
 
 import (
-	"crypto/x509"
 	"encoding/gob"
 	"sync"
-	"weak"
+	"sort"
 
 	"time"
 
@@ -20,7 +19,6 @@ type ShardMaster struct {
 	applyCh chan raft.ApplyMsg
 
 	// Your data here.
-	numGroups int
 	lastApplied map[int]int
 	lastIncludedIndex int // last index applied to the sm
 	results map[int]chan Op
@@ -40,6 +38,8 @@ type Op struct {
     GIDs    []int           // Leave
     Shard   int             // Move
     GID     int             // Move
+	Num     int             // Query
+	config 	Config
 }
 
 func (c Config) Copy() Config {
@@ -61,8 +61,69 @@ func (sm *ShardMaster) isSameOp(op1 Op, op2 Op) bool {
 	return res
 }
 
-func (sm *ShardMaster) Rebalance(newConfig *Config) {
-	//TODO, rebalance shards after every op
+func (sm *ShardMaster) Rebalance(config *Config) {
+	if len(config.Groups) == 0 {
+		for s := 0; s < NShards; s++ {
+			config.Shards[s] = 0
+		}
+		return
+	}
+	// 1. Sorted GIDs
+	gids := make([]int, 0, len(config.Groups))
+	for gid := range config.Groups {
+		gids = append(gids, gid)
+	}
+	sort.Ints(gids)
+	n := len(gids)
+	avg := NShards / n
+	rem := NShards % n
+	target := func(i int) int {
+		if i < rem {
+			return avg + 1
+		}
+		return avg
+	}
+	// 2. Count valid assignments; collect bad shards
+	count := make(map[int]int)
+	for _, gid := range gids {
+		count[gid] = 0
+	}
+	var pool []int // shard indices that need a new owner
+	for s := 0; s < NShards; s++ {
+		gid := config.Shards[s]
+		if _, ok := config.Groups[gid]; !ok {
+			pool = append(pool, s)
+		} else {
+			count[gid]++
+		}
+	}
+	// 3. Groups with too many shards donate (deterministic: high shard index first)
+	for i, gid := range gids {
+		for count[gid] > target(i) {
+			count[gid]--
+			for s := NShards - 1; s >= 0; s-- {
+				if config.Shards[s] == gid {
+					config.Shards[s] = 0
+					pool = append(pool, s)
+					break
+				}
+			}
+		}
+	}
+	// 4. Groups with too few shards receive
+	var need []int
+	for i, gid := range gids {
+		for count[gid] < target(i) {
+			need = append(need, gid)
+			count[gid]++
+		}
+	}
+	// 5. Assign pooled shards to needy groups
+	sort.Ints(pool)
+	for i, s := range pool {
+		config.Shards[s] = need[i]
+	}
+	
 
 }
 
@@ -72,13 +133,7 @@ func (sm *ShardMaster) handleJoin(op *Op) Config {
 	prevConfig := sm.configs[len(sm.configs)-1]
 	newConfig := prevConfig.Copy()
 
-	for gid, server := range op.Servers {
-
-		_, ok := newConfig.Groups[gid]
-		
-		if !ok {
-			newConfig.Num += 1
-		}
+	for gid, server := range op.Servers {		
 		newConfig.Groups[gid] = server
 	}
 	
@@ -97,61 +152,78 @@ func (sm *ShardMaster) handleLeave(op *Op) Config {
 	return newConfig
 }
 
-func (sm *ShardMaster) getSmallestShardInGroup(config *Config, gid int) int {
-	smallest := NShards + 1
-
-	for i := range NShards {
-		if config.Shards[i] == gid && i < smallest {
-			smallest = i
-		}
-	}
-
-	return smallest
-
-
-}
 
 func (sm *ShardMaster) handleMove(op *Op) Config {
 	prevConfig := sm.configs[len(sm.configs)-1]
 	newConfig := prevConfig.Copy()
 
 	currShard := op.Shard
-	currGroup := newConfig.Shards[currShard]
-
 	swapGroup := op.GID
-	swapShard := sm.getSmallestShardInGroup(&newConfig, swapGroup)
 
 	newConfig.Shards[currShard] = swapGroup
-	newConfig.Shards[swapShard] = currGroup
 	return newConfig
 
 }
 
 func (sm *ShardMaster) handleQuery(op *Op) {
+	if op.Num < 0 || op.Num >= len(sm.configs) {
+		op.config = sm.configs[len(sm.configs)-1].Copy()
+	} else {
+		op.config = sm.configs[op.Num].Copy()
+	}
+}
+
+func (sm *ShardMaster) isDuplicateOp(op *Op, idx int) bool {
+	//TODO: return true if this request is too late
+	lastIdx, ok2 := sm.lastApplied[int(op.Me)]
+	if !ok2 || lastIdx < op.ReqId {
+		sm.lastApplied[int(op.Me)] = op.ReqId
+		sm.lastIncludedIndex = idx
+		return false
+
+	}
+	return true
 }
 
 func (sm *ShardMaster) ApplyRoutine() {
 	for {
 		msg := <-sm.applyCh
-		
+		if msg.UseSnapshot {
+			continue
+		}
+
 		op := msg.Command.(Op)
 		idx := msg.Index
 
 		sm.mu.Lock()
+		if op.Type != "Query" && sm.isDuplicateOp(&op, idx) {
+			ch, notify := sm.results[idx]
+			sm.mu.Unlock()
+			if notify {
+				select {
+				case ch <- op:
+				default:
+				}
+			}
+			continue
+		}
 		if op.Type == "Join" {
 			newConfig := sm.handleJoin(&op)
+			newConfig.Num = sm.configs[len(sm.configs)-1].Num + 1
 			sm.Rebalance(&newConfig)
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Leave" {
 			newConfig := sm.handleLeave(&op)
+			newConfig.Num = sm.configs[len(sm.configs)-1].Num + 1
 			sm.Rebalance(&newConfig)
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Move" {
 			newConfig := sm.handleMove(&op)
+			newConfig.Num = sm.configs[len(sm.configs)-1].Num + 1
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Query" {
 			sm.handleQuery(&op)
-		}
+		} 
 	
 		ch, notify := sm.results[idx]
 		sm.mu.Unlock()
@@ -205,6 +277,7 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 		Type:"Join",
 		ReqId: int(reqId),
 		Servers: args.Servers,
+		Me: int64(args.Me),
 	}
 
 	success, _ := sm.waitAppliedOrTimeout(op)
@@ -224,6 +297,7 @@ func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
 		Type:"Leave",
 		ReqId: int(reqId),
 		GIDs: args.GIDs,
+		Me: int64(args.Me),
 	}
 
 	success, _ := sm.waitAppliedOrTimeout(op)
@@ -244,6 +318,7 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 		ReqId: int(reqId),
 		Shard: args.Shard,
 		GID:  args.GID,
+		Me: int64(args.Me),
 	}
 
 	success, _ := sm.waitAppliedOrTimeout(op)
@@ -258,7 +333,25 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
-	// TODO
+	reqId := args.Id
+	op := Op{
+		Type:  "Query",
+		ReqId: int(reqId),
+		Num:   args.Num,
+		Me: int64(args.Me),
+	}
+
+	success, applied := sm.waitAppliedOrTimeout(op)
+
+	if !success {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	reply.Config = applied.config
+	reply.WrongLeader = false
+	reply.Err = OK
 }
 
 
@@ -288,15 +381,16 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm := new(ShardMaster)
 	sm.me = me
 
-	sm.numGroups = 0
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int][]string{}
 
 	gob.Register(Op{})
-	sm.applyCh = make(chan raft.ApplyMsg)
-	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
-	// Your code here.	
+	sm.results = make(map[int]chan Op)
+	sm.lastApplied = make(map[int]int)
+	sm.applyCh = make(chan raft.ApplyMsg, 2048)
+	go sm.ApplyRoutine()
+	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
 	return sm
 }

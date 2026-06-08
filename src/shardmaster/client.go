@@ -39,6 +39,7 @@ func (ck *Clerk) Query(num int) Config {
 	args.Num = num
 	ck.id.Add(1)
 	args.Id =  ck.id.Load()
+	args.Me = int(ck.clientId)
 	
 	for {
 		// try each known server.
@@ -59,6 +60,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args.Servers = servers
 	ck.id.Add(1)
 	args.Id =  ck.id.Load()
+	args.Me = int(ck.clientId)
 
 	for {
 		// try each known server.
@@ -79,6 +81,7 @@ func (ck *Clerk) Leave(gids []int) {
 	args.GIDs = gids
 	ck.id.Add(1)
 	args.Id =  ck.id.Load()
+	args.Me = int(ck.clientId)
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -99,6 +102,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.GID = gid
 	ck.id.Add(1)
 	args.Id =  ck.id.Load()
+	args.Me = int(ck.clientId)
 
 	for {
 		// try each known server.
