@@ -1,10 +1,14 @@
 package shardmaster
 
+import (
+	"crypto/x509"
+	"encoding/gob"
+	"sync"
 
-import "raft"
-import "labrpc"
-import "sync"
-import "encoding/gob"
+	"6.824/labrpc"
+	"6.824/raft"
+	"time"
+)
 
 
 type ShardMaster struct {
@@ -14,18 +18,143 @@ type ShardMaster struct {
 	applyCh chan raft.ApplyMsg
 
 	// Your data here.
+	numGroups int
+	lastApplied map[int]int
+	lastIncludedIndex int // last index applied to the sm
+	results map[int]chan Op
 
 	configs []Config // indexed by config num
 }
 
+const applyWaitTimeout = 500 * time.Millisecond
+
 
 type Op struct {
 	// Your data here.
+	Type  string
+	ReqId int
+	Me    int64
+	Servers map[int][]string // Join
+    GIDs    []int           // Leave
+    Shard   int             // Move
+    GID     int             // Move
+}
+
+func (sm *ShardMaster) isSameOp(op1 Op, op2 Op) bool {
+	res := op1.Type == op2.Type && op1.ReqId == op2.ReqId && op1.Me == op2.Me
+	return res
+}
+
+//TODO
+func (sm *ShardMaster) handleJoin(op *Op) {
+}
+
+func (sm *ShardMaster) handleLeave(op *Op) {
+}
+
+func (sm *ShardMaster) handleMove(op *Op) {
+}
+
+func (sm *ShardMaster) handleQuery(op *Op) {
+}
+
+func (sm *ShardMaster) ApplyRoutine() {
+	for {
+		msg := <-sm.applyCh
+		
+		op := msg.Command.(Op)
+		idx := msg.Index
+
+		sm.mu.Lock()
+		if op.Type == "Join" {
+			sm.handleJoin(&op)
+		} else if op.Type == "Leave" {
+			sm.handleLeave(&op)
+		} else if op.Type == "Move" {
+			sm.handleMove(&op)
+		} else if op.Type == "Query" {
+			sm.handleQuery(&op)
+		}
+	
+		ch, notify := sm.results[idx]
+		sm.mu.Unlock()
+
+		if notify {
+			select {
+			case ch <- op:
+			default:
+			}
+		}
+
+	}
+
+}
+
+func (kv *ShardMaster) waitAppliedOrTimeout(op Op) (bool, Op) {
+
+	idx, _, leader := kv.rf.Start(op)
+
+	if !leader {
+		return false, op
+	}
+
+	ch := make(chan Op, 1)
+	kv.mu.Lock()
+	kv.results[idx] = ch
+	kv.mu.Unlock()
+
+	select {
+	case appliedOp := <-ch:
+		kv.mu.Lock()
+		delete(kv.results, idx)
+		kv.mu.Unlock()
+		return kv.isSameOp(op, appliedOp), appliedOp
+	case <-time.After(applyWaitTimeout):
+		kv.mu.Lock()
+		delete(kv.results, idx)
+		kv.mu.Unlock()
+		return false, op
+	}
+
+}
+
+func (sm *ShardMaster) Rebalance(newConfig *Config) {
+	//TODO, rebalance shards after every op
+}
+
+
+//Caller holds Mu. joins a single server to the config
+func (sm *ShardMaster) handleJoin(gid int, servers []string, newConfig *Config) {
+	prevConfig := sm.configs[len(sm.configs)-1]
+	
+	_, exists := prevConfig.Groups[gid]
+	if (!exists) {
+		sm.numGroups+=1
+	} 
+	newConfig.Groups[gid] = servers
+	
 }
 
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+
+	reqId := args.Id
+	op := Op{
+		Type:"Join",
+		ReqId: int(reqId),
+		Servers: args.Servers,
+	}
+
+	success, _ := sm.waitAppliedOrTimeout(op)
+
+	if !success {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		return
+	}
+	reply.WrongLeader = false
+	reply.Err = OK
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -67,6 +196,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm := new(ShardMaster)
 	sm.me = me
 
+	sm.numGroups = 0
 	sm.configs = make([]Config, 1)
 	sm.configs[0].Groups = map[int][]string{}
 
@@ -74,7 +204,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sm.applyCh = make(chan raft.ApplyMsg)
 	sm.rf = raft.Make(servers, me, persister, sm.applyCh)
 
-	// Your code here.
+	// Your code here.	
 
 	return sm
 }

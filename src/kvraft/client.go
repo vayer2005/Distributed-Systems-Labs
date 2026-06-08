@@ -2,7 +2,7 @@ package raftkv
 
 import (
 	"crypto/rand"
-	"labrpc"
+	"6.824/labrpc"
 	"math/big"
 	"sync/atomic"
 )

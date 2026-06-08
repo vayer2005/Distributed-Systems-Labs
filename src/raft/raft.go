@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"labrpc"
+	"6.824/labrpc"
 )
 
 func init() {

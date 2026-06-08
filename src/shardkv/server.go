@@ -1,9 +1,9 @@
 package shardkv
 
 
-// import "shardmaster"
-import "labrpc"
-import "raft"
+// import "6.824/shardmaster"
+import "6.824/labrpc"
+import "6.824/raft"
 import "sync"
 import "encoding/gob"
 

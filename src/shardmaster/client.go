@@ -4,14 +4,17 @@ package shardmaster
 // Shardmaster clerk.
 //
 
-import "labrpc"
+import "6.824/labrpc"
 import "time"
 import "crypto/rand"
 import "math/big"
+import "sync/atomic"
 
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
+	clientId int64        // random per clerk; stable for lifetime of this Clerk
+	id       atomic.Int64 // id of operation
 }
 
 func nrand() int64 {
@@ -24,6 +27,8 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.clientId = nrand()
+	ck.id.Store(0)
 	// Your code here.
 	return ck
 }
@@ -32,6 +37,9 @@ func (ck *Clerk) Query(num int) Config {
 	args := &QueryArgs{}
 	// Your code here.
 	args.Num = num
+	ck.id.Add(1)
+	args.Id =  ck.id.Load()
+	
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -49,6 +57,8 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	args := &JoinArgs{}
 	// Your code here.
 	args.Servers = servers
+	ck.id.Add(1)
+	args.Id =  ck.id.Load()
 
 	for {
 		// try each known server.
@@ -67,7 +77,8 @@ func (ck *Clerk) Leave(gids []int) {
 	args := &LeaveArgs{}
 	// Your code here.
 	args.GIDs = gids
-
+	ck.id.Add(1)
+	args.Id =  ck.id.Load()
 	for {
 		// try each known server.
 		for _, srv := range ck.servers {
@@ -86,6 +97,8 @@ func (ck *Clerk) Move(shard int, gid int) {
 	// Your code here.
 	args.Shard = shard
 	args.GID = gid
+	ck.id.Add(1)
+	args.Id =  ck.id.Load()
 
 	for {
 		// try each known server.
