@@ -4,10 +4,12 @@ import (
 	"crypto/x509"
 	"encoding/gob"
 	"sync"
+	"weak"
+
+	"time"
 
 	"6.824/labrpc"
 	"6.824/raft"
-	"time"
 )
 
 
@@ -40,19 +42,55 @@ type Op struct {
     GID     int             // Move
 }
 
+func (c Config) Copy() Config {
+	nc := Config{
+		Num:    c.Num,
+		Shards: c.Shards,
+		Groups: make(map[int][]string),
+	}
+	for gid, servers := range c.Groups {
+		s := make([]string, len(servers))
+		copy(s, servers)
+		nc.Groups[gid] = s
+	}
+	return nc
+}
+
 func (sm *ShardMaster) isSameOp(op1 Op, op2 Op) bool {
 	res := op1.Type == op2.Type && op1.ReqId == op2.ReqId && op1.Me == op2.Me
 	return res
 }
 
+func (Sm *ShardMaster) Rebalance(config Config) {
+	//Rebalance most recent config
+}
+
+func (sm *ShardMaster) handleJoin(op *Op) Config {
+	//Creates new config with groups from op.Servers
+	prevConfig := sm.configs[len(sm.configs)-1]
+	newConfig := prevConfig.Copy()
+
+	for gid, server := range op.Servers {
+
+		_, ok := newConfig.Groups[gid]
+		
+		if !ok {
+			newConfig.Num += 1
+		}
+		newConfig.Groups[gid] = server
+	}
+	
+	return newConfig
+
+}
+
 //TODO
-func (sm *ShardMaster) handleJoin(op *Op) {
+func (sm *ShardMaster) handleLeave(op *Op) Config {
+	return Config{}
 }
 
-func (sm *ShardMaster) handleLeave(op *Op) {
-}
-
-func (sm *ShardMaster) handleMove(op *Op) {
+func (sm *ShardMaster) handleMove(op *Op) Config {
+	return Config{}
 }
 
 func (sm *ShardMaster) handleQuery(op *Op) {
@@ -67,11 +105,17 @@ func (sm *ShardMaster) ApplyRoutine() {
 
 		sm.mu.Lock()
 		if op.Type == "Join" {
-			sm.handleJoin(&op)
+			newConfig := sm.handleJoin(&op)
+			sm.Rebalance(newConfig)
+			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Leave" {
-			sm.handleLeave(&op)
+			newConfig := sm.handleLeave(&op)
+			sm.Rebalance(newConfig)
+			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Move" {
-			sm.handleMove(&op)
+			newConfig := sm.handleMove(&op)
+			sm.Rebalance(newConfig)
+			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Query" {
 			sm.handleQuery(&op)
 		}
