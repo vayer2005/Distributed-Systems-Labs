@@ -19,7 +19,7 @@ type ShardMaster struct {
 	applyCh chan raft.ApplyMsg
 
 	// Your data here.
-	lastApplied map[int]int
+	lastApplied map[int]int // Last op recieved from client (per client)
 	lastIncludedIndex int // last index applied to the sm
 	results map[int]chan Op
 
