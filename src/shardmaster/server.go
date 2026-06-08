@@ -61,9 +61,11 @@ func (sm *ShardMaster) isSameOp(op1 Op, op2 Op) bool {
 	return res
 }
 
-func (Sm *ShardMaster) Rebalance(config Config) {
-	//Rebalance most recent config
+func (sm *ShardMaster) Rebalance(newConfig *Config) {
+	//TODO, rebalance shards after every op
+
 }
+
 
 func (sm *ShardMaster) handleJoin(op *Op) Config {
 	//Creates new config with groups from op.Servers
@@ -86,11 +88,43 @@ func (sm *ShardMaster) handleJoin(op *Op) Config {
 
 //TODO
 func (sm *ShardMaster) handleLeave(op *Op) Config {
-	return Config{}
+	prevConfig := sm.configs[len(sm.configs)-1]
+	newConfig := prevConfig.Copy()
+
+	for _, id := range op.GIDs {
+		delete(newConfig.Groups, id)
+	}
+	return newConfig
+}
+
+func (sm *ShardMaster) getSmallestShardInGroup(config *Config, gid int) int {
+	smallest := NShards + 1
+
+	for i := range NShards {
+		if config.Shards[i] == gid && i < smallest {
+			smallest = i
+		}
+	}
+
+	return smallest
+
+
 }
 
 func (sm *ShardMaster) handleMove(op *Op) Config {
-	return Config{}
+	prevConfig := sm.configs[len(sm.configs)-1]
+	newConfig := prevConfig.Copy()
+
+	currShard := op.Shard
+	currGroup := newConfig.Shards[currShard]
+
+	swapGroup := op.GID
+	swapShard := sm.getSmallestShardInGroup(&newConfig, swapGroup)
+
+	newConfig.Shards[currShard] = swapGroup
+	newConfig.Shards[swapShard] = currGroup
+	return newConfig
+
 }
 
 func (sm *ShardMaster) handleQuery(op *Op) {
@@ -106,15 +140,14 @@ func (sm *ShardMaster) ApplyRoutine() {
 		sm.mu.Lock()
 		if op.Type == "Join" {
 			newConfig := sm.handleJoin(&op)
-			sm.Rebalance(newConfig)
+			sm.Rebalance(&newConfig)
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Leave" {
 			newConfig := sm.handleLeave(&op)
-			sm.Rebalance(newConfig)
+			sm.Rebalance(&newConfig)
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Move" {
 			newConfig := sm.handleMove(&op)
-			sm.Rebalance(newConfig)
 			sm.configs = append(sm.configs, newConfig)
 		} else if op.Type == "Query" {
 			sm.handleQuery(&op)
@@ -162,10 +195,6 @@ func (kv *ShardMaster) waitAppliedOrTimeout(op Op) (bool, Op) {
 
 }
 
-func (sm *ShardMaster) Rebalance(newConfig *Config) {
-	//TODO, rebalance shards after every op
-}
-
 
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
@@ -190,15 +219,46 @@ func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) {
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) {
-	// Your code here.
+	reqId := args.Id
+	op := Op{
+		Type:"Leave",
+		ReqId: int(reqId),
+		GIDs: args.GIDs,
+	}
+
+	success, _ := sm.waitAppliedOrTimeout(op)
+
+	if !success {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		return
+	}
+	reply.WrongLeader = false
+	reply.Err = OK
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) {
-	// Your code here.
+	reqId := args.Id
+	op := Op{
+		Type:"Move",
+		ReqId: int(reqId),
+		Shard: args.Shard,
+		GID:  args.GID,
+	}
+
+	success, _ := sm.waitAppliedOrTimeout(op)
+
+	if !success {
+		reply.WrongLeader = true
+		reply.Err = ErrWrongLeader
+		return
+	}
+	reply.WrongLeader = false
+	reply.Err = OK
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) {
-	// Your code here.
+	// TODO
 }
 
 
